@@ -1,10 +1,103 @@
 import { useState, type FormEvent } from "react";
+import {
+  CognitoUserPool,
+  CognitoUser,
+  CognitoUserAttribute,
+  AuthenticationDetails,
+} from "amazon-cognito-identity-js";
+
+/* =========================================================
+   CONFIGURAÇÃO DO AWS COGNITO
+   (User Pool criado no console: ContaCerta / us-east-1)
+========================================================= */
+
+const userPool = new CognitoUserPool({
+  UserPoolId: "us-east-1_IWNso18oi",
+  ClientId: "25j0dvdo6lbdkot2k6g231blrm",
+});
+
+/** Traduz os códigos de erro do Cognito para mensagens em português. */
+function traduzErroCognito(err: any): string {
+  switch (err?.code) {
+    case "UsernameExistsException":
+      return "Este e-mail já está cadastrado.";
+    case "InvalidPasswordException":
+      return "A senha não atende aos requisitos de segurança.";
+    case "InvalidParameterException":
+      return "Dados inválidos. Confira o e-mail e a senha.";
+    case "NotAuthorizedException":
+      return "E-mail ou senha incorretos.";
+    case "UserNotFoundException":
+      return "E-mail ou senha incorretos.";
+    case "UserNotConfirmedException":
+      return "Confirme seu e-mail antes de entrar.";
+    case "CodeMismatchException":
+      return "Código de confirmação inválido.";
+    case "ExpiredCodeException":
+      return "Código expirado. Solicite um novo.";
+    case "LimitExceededException":
+    case "TooManyRequestsException":
+      return "Muitas tentativas. Aguarde um pouco e tente novamente.";
+    default:
+      return err?.message || "Ocorreu um erro. Tente novamente.";
+  }
+}
+
+/** RF01/RF02 - Cadastro e autenticação de usuários via Cognito. */
+function cadastrarNoCognito(nome: string, email: string, senha: string): Promise<void> {
+  return new Promise((resolve, reject) => {
+    const atributos = [new CognitoUserAttribute({ Name: "name", Value: nome })];
+    userPool.signUp(email, senha, atributos, [], (err) => {
+      if (err) reject(err);
+      else resolve();
+    });
+  });
+}
+
+function confirmarCadastroNoCognito(email: string, codigo: string): Promise<void> {
+  return new Promise((resolve, reject) => {
+    const cognitoUser = new CognitoUser({ Username: email, Pool: userPool });
+    cognitoUser.confirmRegistration(codigo, true, (err) => {
+      if (err) reject(err);
+      else resolve();
+    });
+  });
+}
+
+function reenviarCodigoCognito(email: string): Promise<void> {
+  return new Promise((resolve, reject) => {
+    const cognitoUser = new CognitoUser({ Username: email, Pool: userPool });
+    cognitoUser.resendConfirmationCode((err) => {
+      if (err) reject(err);
+      else resolve();
+    });
+  });
+}
+
+function autenticarNoCognito(email: string, senha: string): Promise<Usuario> {
+  return new Promise((resolve, reject) => {
+    const cognitoUser = new CognitoUser({ Username: email, Pool: userPool });
+    const detalhes = new AuthenticationDetails({ Username: email, Password: senha });
+
+    cognitoUser.authenticateUser(detalhes, {
+      onSuccess: (sessao) => {
+        const payload = sessao.getIdToken().decodePayload();
+        resolve({ nome: (payload.name as string) || email.split("@")[0], email });
+      },
+      onFailure: (err) => reject(err),
+    });
+  });
+}
+
+function sairDoCognito() {
+  userPool.getCurrentUser()?.signOut();
+}
 
 /* =========================================================
    TIPOS E ROTEAMENTO
 ========================================================= */
 
-type Tela = "inicio" | "login" | "cadastro" | "dashboard" | "despesas" | "metas" | "alertas";
+type Tela = "inicio" | "login" | "cadastro" | "confirmarCadastro" | "dashboard" | "despesas" | "metas" | "alertas";
 
 interface Usuario {
   nome: string;
@@ -28,6 +121,10 @@ function App() {
   const [usuario, setUsuario] = useState<Usuario | null>(null);
   const [despesas, setDespesas] = useState<Despesa[]>([]); // RN01: nenhuma despesa até o usuário cadastrar
 
+  // Guarda temporariamente e-mail/senha entre o cadastro e a confirmação do código,
+  // para poder logar automaticamente assim que o e-mail for confirmado.
+  const [pendente, setPendente] = useState<{ email: string; senha: string } | null>(null);
+
   const irPara = (destino: Tela) => setTela(destino);
 
   const fazerLogin = (dados: Usuario) => {
@@ -36,8 +133,15 @@ function App() {
   };
 
   const fazerLogout = () => {
+    sairDoCognito();
     setUsuario(null);
     setTela("inicio");
+  };
+
+  // Chamado quando o cadastro no Cognito dá certo, mas o e-mail ainda precisa ser confirmado.
+  const aguardarConfirmacao = (email: string, senha: string) => {
+    setPendente({ email, senha });
+    setTela("confirmarCadastro");
   };
 
   const adicionarDespesa = (despesa: Omit<Despesa, "id">) => {
@@ -49,11 +153,29 @@ function App() {
   };
 
   if (tela === "login") {
-    return <Login voltar={() => irPara("inicio")} cadastro={() => irPara("cadastro")} aoLogar={fazerLogin} />;
+    return (
+      <Login
+        voltar={() => irPara("inicio")}
+        cadastro={() => irPara("cadastro")}
+        aoLogar={fazerLogin}
+        precisaConfirmar={aguardarConfirmacao}
+      />
+    );
   }
 
   if (tela === "cadastro") {
-    return <Cadastro voltar={() => irPara("inicio")} login={() => irPara("login")} aoCadastrar={fazerLogin} />;
+    return <Cadastro voltar={() => irPara("inicio")} login={() => irPara("login")} aoCadastrar={aguardarConfirmacao} />;
+  }
+
+  if (tela === "confirmarCadastro" && pendente) {
+    return (
+      <ConfirmarCadastro
+        email={pendente.email}
+        senha={pendente.senha}
+        aoConfirmar={fazerLogin}
+        voltar={() => irPara("login")}
+      />
+    );
   }
 
   if (usuario && (tela === "dashboard" || tela === "despesas" || tela === "metas" || tela === "alertas")) {
@@ -88,6 +210,7 @@ function validarEmail(valor: string): string {
 function validarSenha(valor: string): string {
   if (!valor) return "Informe a senha.";
   if (valor.length < 8) return "A senha deve ter mais de 8 caracteres.";
+  if (!/[a-z]/.test(valor)) return "A senha deve ter pelo menos uma letra minúscula.";
   if (!/[A-Z]/.test(valor)) return "A senha deve ter pelo menos uma letra maiúscula.";
   if (!/[0-9]/.test(valor)) return "A senha deve ter pelo menos um número.";
   if (!/[^A-Za-z0-9]/.test(valor)) return "A senha deve ter pelo menos um caractere especial.";
@@ -262,15 +385,16 @@ interface LoginProps {
   voltar: () => void;
   cadastro: () => void;
   aoLogar: (usuario: Usuario) => void;
+  precisaConfirmar: (email: string, senha: string) => void;
 }
 
-function Login({ voltar, cadastro, aoLogar }: LoginProps) {
+function Login({ voltar, cadastro, aoLogar, precisaConfirmar }: LoginProps) {
   const [email, setEmail] = useState("");
   const [senha, setSenha] = useState("");
-  const [erros, setErros] = useState<{ email?: string; senha?: string }>({});
+  const [erros, setErros] = useState<{ email?: string; senha?: string; geral?: string }>({});
   const [enviando, setEnviando] = useState(false);
 
-  const handleSubmit = (e: FormEvent) => {
+  const handleSubmit = async (e: FormEvent) => {
     e.preventDefault();
     const erroEmail = validarEmail(email);
     const erroSenha = validarSenha(senha);
@@ -282,10 +406,19 @@ function Login({ voltar, cadastro, aoLogar }: LoginProps) {
 
     setErros({});
     setEnviando(true);
-    setTimeout(() => {
+
+    try {
+      const usuario = await autenticarNoCognito(email, senha);
       setEnviando(false);
-      aoLogar({ nome: email.split("@")[0], email });
-    }, 400);
+      aoLogar(usuario);
+    } catch (err: any) {
+      setEnviando(false);
+      if (err?.code === "UserNotConfirmedException") {
+        precisaConfirmar(email, senha);
+        return;
+      }
+      setErros({ geral: traduzErroCognito(err) });
+    }
   };
 
   return (
@@ -349,6 +482,10 @@ function Login({ voltar, cadastro, aoLogar }: LoginProps) {
               />
             </div>
 
+            {erros.geral && (
+              <p className="rounded-lg bg-red-50 px-4 py-3 text-sm font-semibold text-red-600">{erros.geral}</p>
+            )}
+
             <button
               type="submit"
               disabled={enviando}
@@ -375,7 +512,7 @@ function Login({ voltar, cadastro, aoLogar }: LoginProps) {
 interface CadastroProps {
   voltar: () => void;
   login: () => void;
-  aoCadastrar: (usuario: Usuario) => void;
+  aoCadastrar: (email: string, senha: string) => void;
 }
 
 function Cadastro({ voltar, login, aoCadastrar }: CadastroProps) {
@@ -383,10 +520,10 @@ function Cadastro({ voltar, login, aoCadastrar }: CadastroProps) {
   const [email, setEmail] = useState("");
   const [senha, setSenha] = useState("");
   const [confirmarSenha, setConfirmarSenha] = useState("");
-  const [erros, setErros] = useState<{ nome?: string; email?: string; senha?: string; confirmarSenha?: string }>({});
+  const [erros, setErros] = useState<{ nome?: string; email?: string; senha?: string; confirmarSenha?: string; geral?: string }>({});
   const [enviando, setEnviando] = useState(false);
 
-  const handleSubmit = (e: FormEvent) => {
+  const handleSubmit = async (e: FormEvent) => {
     e.preventDefault();
     const novosErros = {
       nome: validarNome(nome),
@@ -402,10 +539,15 @@ function Cadastro({ voltar, login, aoCadastrar }: CadastroProps) {
 
     setErros({});
     setEnviando(true);
-    setTimeout(() => {
+
+    try {
+      await cadastrarNoCognito(nome, email, senha);
       setEnviando(false);
-      aoCadastrar({ nome, email });
-    }, 400);
+      aoCadastrar(email, senha);
+    } catch (err: any) {
+      setEnviando(false);
+      setErros({ geral: traduzErroCognito(err) });
+    }
   };
 
   return (
@@ -493,6 +635,10 @@ function Cadastro({ voltar, login, aoCadastrar }: CadastroProps) {
               onBlur={() => setErros((s) => ({ ...s, confirmarSenha: validarConfirmacaoSenha(senha, confirmarSenha) }))}
             />
 
+            {erros.geral && (
+              <p className="rounded-lg bg-red-50 px-4 py-3 text-sm font-semibold text-red-600">{erros.geral}</p>
+            )}
+
             <button
               type="submit"
               disabled={enviando}
@@ -511,6 +657,104 @@ function Cadastro({ voltar, login, aoCadastrar }: CadastroProps) {
             <button onClick={login} className="font-bold text-blue-600 hover:text-blue-700">Entrar</button>
           </p>
         </div>
+      </div>
+    </div>
+  );
+}
+
+/* =========================================================
+   CONFIRMAÇÃO DE E-MAIL (código enviado pelo Cognito)
+========================================================= */
+
+interface ConfirmarCadastroProps {
+  email: string;
+  senha: string;
+  aoConfirmar: (usuario: Usuario) => void;
+  voltar: () => void;
+}
+
+function ConfirmarCadastro({ email, senha, aoConfirmar, voltar }: ConfirmarCadastroProps) {
+  const [codigo, setCodigo] = useState("");
+  const [erro, setErro] = useState("");
+  const [enviando, setEnviando] = useState(false);
+  const [reenviando, setReenviando] = useState(false);
+  const [mensagem, setMensagem] = useState("");
+
+  const handleSubmit = async (e: FormEvent) => {
+    e.preventDefault();
+
+    if (!codigo.trim()) {
+      setErro("Informe o código recebido por e-mail.");
+      return;
+    }
+
+    setErro("");
+    setEnviando(true);
+
+    try {
+      await confirmarCadastroNoCognito(email, codigo.trim());
+      // E-mail confirmado: já loga o usuário automaticamente na sequência.
+      const usuario = await autenticarNoCognito(email, senha);
+      setEnviando(false);
+      aoConfirmar(usuario);
+    } catch (err: any) {
+      setEnviando(false);
+      setErro(traduzErroCognito(err));
+    }
+  };
+
+  const handleReenviar = async () => {
+    setReenviando(true);
+    setMensagem("");
+    try {
+      await reenviarCodigoCognito(email);
+      setMensagem("Um novo código foi enviado para o seu e-mail.");
+    } catch (err: any) {
+      setErro(traduzErroCognito(err));
+    } finally {
+      setReenviando(false);
+    }
+  };
+
+  return (
+    <div className="flex min-h-screen items-center justify-center bg-slate-50 px-6 py-10">
+      <div className="w-full max-w-md">
+        <button onClick={voltar} className="mb-8 text-sm font-semibold text-slate-500 transition hover:text-blue-600">← Voltar para o login</button>
+
+        <div className="mb-8"><Logo /></div>
+
+        <h2 className="text-3xl font-extrabold text-blue-950">Confirme seu e-mail</h2>
+        <p className="mt-2 text-slate-500">
+          Enviamos um código de verificação para <strong className="text-blue-950">{email}</strong>. Digite-o abaixo para ativar sua conta.
+        </p>
+
+        <form className="mt-8 space-y-5" onSubmit={handleSubmit} noValidate>
+          <Campo
+            label="Código de confirmação"
+            tipo="text"
+            placeholder="000000"
+            valor={codigo}
+            erro={erro}
+            onChange={setCodigo}
+          />
+
+          {mensagem && <p className="rounded-lg bg-green-50 px-4 py-3 text-sm font-semibold text-green-700">{mensagem}</p>}
+
+          <button
+            type="submit"
+            disabled={enviando}
+            className="w-full rounded-xl bg-blue-600 py-3.5 font-bold text-white shadow-lg shadow-blue-600/20 transition hover:bg-blue-700 disabled:cursor-not-allowed disabled:opacity-60"
+          >
+            {enviando ? "Confirmando..." : "Confirmar e entrar"}
+          </button>
+        </form>
+
+        <p className="mt-6 text-center text-sm text-slate-500">
+          Não recebeu o código?{" "}
+          <button onClick={handleReenviar} disabled={reenviando} className="font-bold text-blue-600 hover:text-blue-700 disabled:opacity-60">
+            {reenviando ? "Reenviando..." : "Reenviar código"}
+          </button>
+        </p>
       </div>
     </div>
   );
