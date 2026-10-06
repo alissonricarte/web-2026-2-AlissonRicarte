@@ -1,10 +1,14 @@
-import { useState, type FormEvent } from "react";
+import { useEffect, useState, type FormEvent } from "react";
 import {
   CognitoUserPool,
   CognitoUser,
   CognitoUserAttribute,
   AuthenticationDetails,
+  type CognitoUserSession,
 } from "amazon-cognito-identity-js";
+import { Amplify } from "aws-amplify";
+import { fetchAuthSession, signInWithRedirect, signOut as amplifySignOut } from "aws-amplify/auth";
+import { Hub } from "aws-amplify/utils";
 
 /* =========================================================
    CONFIGURAÇÃO DO AWS COGNITO
@@ -14,6 +18,26 @@ import {
 const userPool = new CognitoUserPool({
   UserPoolId: "us-east-1_IWNso18oi",
   ClientId: "25j0dvdo6lbdkot2k6g231blrm",
+});
+
+/* Amplify: usado apenas para o login federado com o Google (Hosted UI do Cognito). */
+Amplify.configure({
+  Auth: {
+    Cognito: {
+      userPoolId: "us-east-1_IWNso18oi",
+      userPoolClientId: "25j0dvdo6lbdkot2k6g231blrm",
+      loginWith: {
+        oauth: {
+          domain: "us-east-1iwnso18oi.auth.us-east-1.amazoncognito.com",
+          scopes: ["openid", "email", "profile"],
+          redirectSignIn: [window.location.origin + "/"],
+          redirectSignOut: [window.location.origin + "/"],
+          responseType: "code",
+          providers: ["Google"],
+        },
+      },
+    },
+  },
 });
 
 /** Traduz os códigos de erro do Cognito para mensagens em português. */
@@ -89,8 +113,39 @@ function autenticarNoCognito(email: string, senha: string): Promise<Usuario> {
   });
 }
 
+/** Login federado: redireciona para o Google (via Hosted UI do Cognito). */
+function loginComGoogle() {
+  return signInWithRedirect({ provider: "Google" });
+}
+
 function sairDoCognito() {
-  userPool.getCurrentUser()?.signOut();
+  userPool.getCurrentUser()?.signOut(); // sessão e-mail/senha
+  amplifySignOut().catch(() => { }); // sessão Google (encerra também no Cognito)
+}
+
+/** Lê a sessão já existente (Google via Amplify ou e-mail/senha via identity-js). */
+async function carregarSessaoAtual(): Promise<Usuario | null> {
+  try {
+    const { tokens } = await fetchAuthSession();
+    if (tokens?.idToken) {
+      const p = tokens.idToken.payload;
+      const email = String(p.email ?? "");
+      return { nome: String(p.name ?? email.split("@")[0]), email };
+    }
+  } catch {
+    // segue para o fallback
+  }
+
+  return new Promise((resolve) => {
+    const atual = userPool.getCurrentUser();
+    if (!atual) return resolve(null);
+    atual.getSession((err: Error | null, sessao: CognitoUserSession | null) => {
+      if (err || !sessao?.isValid()) return resolve(null);
+      const p = sessao.getIdToken().decodePayload();
+      const email = String(p.email ?? "");
+      resolve({ nome: String(p.name ?? email.split("@")[0]), email });
+    });
+  });
 }
 
 /* =========================================================
@@ -120,10 +175,52 @@ function App() {
   const [tela, setTela] = useState<Tela>("inicio");
   const [usuario, setUsuario] = useState<Usuario | null>(null);
   const [despesas, setDespesas] = useState<Despesa[]>([]); // RN01: nenhuma despesa até o usuário cadastrar
+  const [carregandoSessao, setCarregandoSessao] = useState(true);
 
   // Guarda temporariamente e-mail/senha entre o cadastro e a confirmação do código,
   // para poder logar automaticamente assim que o e-mail for confirmado.
   const [pendente, setPendente] = useState<{ email: string; senha: string } | null>(null);
+
+  // Restaura a sessão ao abrir o app e ao voltar do login com Google.
+  useEffect(() => {
+    let ativo = true;
+    const voltandoDoGoogle = new URLSearchParams(window.location.search).has("code");
+
+    const restaurar = async () => {
+      const u = await carregarSessaoAtual();
+      if (!ativo) return;
+      if (u) {
+        setUsuario(u);
+        setTela("dashboard");
+        setCarregandoSessao(false);
+      } else if (!voltandoDoGoogle) {
+        setCarregandoSessao(false); // se está voltando do Google, espera o evento abaixo
+      }
+    };
+
+    restaurar();
+
+    const cancelar = Hub.listen("auth", ({ payload }) => {
+      if (payload.event === "signInWithRedirect") restaurar();
+      if (payload.event === "signInWithRedirect_failure") setCarregandoSessao(false);
+    });
+
+    // Segurança: se o evento do Amplify já tiver ocorrido antes do listener,
+    // tenta de novo e libera a tela depois de alguns segundos.
+    const limite = voltandoDoGoogle
+      ? setTimeout(() => {
+        restaurar().finally(() => {
+          if (ativo) setCarregandoSessao(false);
+        });
+      }, 4000)
+      : undefined;
+
+    return () => {
+      ativo = false;
+      cancelar();
+      if (limite) clearTimeout(limite);
+    };
+  }, []);
 
   const irPara = (destino: Tela) => setTela(destino);
 
@@ -151,6 +248,10 @@ function App() {
   const removerDespesa = (id: string) => {
     setDespesas((atual) => atual.filter((d) => d.id !== id)); // RN12: excluídas somem dos cálculos
   };
+
+  if (carregandoSessao) {
+    return <div className="flex min-h-screen items-center justify-center text-slate-500">Carregando...</div>;
+  }
 
   if (tela === "login") {
     return (
@@ -421,6 +522,20 @@ function Login({ voltar, cadastro, aoLogar, precisaConfirmar }: LoginProps) {
     }
   };
 
+  const handleGoogle = async () => {
+    setErros({});
+    try {
+      await loginComGoogle();
+    } catch (err: any) {
+      setErros({
+        geral:
+          err?.name === "UserAlreadyAuthenticatedException"
+            ? "Você já está autenticado. Saia da conta e tente novamente."
+            : traduzErroCognito(err),
+      });
+    }
+  };
+
   return (
     <div className="grid min-h-screen lg:grid-cols-2">
       <div className="relative hidden overflow-hidden bg-gradient-to-br from-blue-950 via-blue-900 to-blue-700 p-10 lg:flex lg:items-center">
@@ -494,6 +609,21 @@ function Login({ voltar, cadastro, aoLogar, precisaConfirmar }: LoginProps) {
               {enviando ? "Entrando..." : "Entrar na conta"}
             </button>
           </form>
+
+          <div className="my-6 flex items-center gap-3 text-xs font-semibold text-slate-400">
+            <span className="h-px flex-1 bg-slate-200" />
+            ou
+            <span className="h-px flex-1 bg-slate-200" />
+          </div>
+
+          <button
+            type="button"
+            onClick={handleGoogle}
+            className="flex w-full items-center justify-center gap-3 rounded-xl border border-slate-300 bg-white py-3.5 font-bold text-slate-700 transition hover:bg-slate-50"
+          >
+            <span className="text-lg font-extrabold text-blue-600">G</span>
+            Entrar com Google
+          </button>
 
           <p className="mt-8 text-center text-sm text-slate-500">
             Ainda não possui uma conta?{" "}
