@@ -9,6 +9,7 @@ import {
 import { Amplify } from "aws-amplify";
 import { fetchAuthSession, signInWithRedirect, signOut as amplifySignOut } from "aws-amplify/auth";
 import { Hub } from "aws-amplify/utils";
+import Chat from "./Chat";
 
 /* =========================================================
    CONFIGURAÇÃO DO AWS COGNITO
@@ -148,11 +149,30 @@ async function carregarSessaoAtual(): Promise<Usuario | null> {
   });
 }
 
+/** Access token do Cognito (login Google via Amplify ou e-mail/senha via identity-js). */
+async function obterTokenAcesso(): Promise<string | null> {
+  try {
+    const { tokens } = await fetchAuthSession();
+    if (tokens?.accessToken) return tokens.accessToken.toString();
+  } catch {
+    // segue para o fallback
+  }
+
+  return new Promise((resolve) => {
+    const atual = userPool.getCurrentUser();
+    if (!atual) return resolve(null);
+    atual.getSession((err: Error | null, sessao: CognitoUserSession | null) => {
+      if (err || !sessao?.isValid()) return resolve(null);
+      resolve(sessao.getAccessToken().getJwtToken());
+    });
+  });
+}
+
 /* =========================================================
    TIPOS E ROTEAMENTO
 ========================================================= */
 
-type Tela = "inicio" | "login" | "cadastro" | "confirmarCadastro" | "dashboard" | "despesas" | "metas" | "alertas";
+type Tela = "inicio" | "login" | "cadastro" | "confirmarCadastro" | "dashboard" | "despesas" | "metas" | "alertas" | "chat";
 
 interface Usuario {
   nome: string;
@@ -279,7 +299,7 @@ function App() {
     );
   }
 
-  if (usuario && (tela === "dashboard" || tela === "despesas" || tela === "metas" || tela === "alertas")) {
+  if (usuario && (tela === "dashboard" || tela === "despesas" || tela === "metas" || tela === "alertas" || tela === "chat")) {
     return (
       <AreaLogada
         telaAtiva={tela}
@@ -909,6 +929,7 @@ const ITENS_MENU: { id: Tela; label: string; icon: string }[] = [
   { id: "despesas", label: "Despesas", icon: "$" },
   { id: "metas", label: "Metas", icon: "◎" },
   { id: "alertas", label: "Alertas", icon: "!" },
+  { id: "chat", label: "Assistente", icon: "✦" },
 ];
 
 function AreaLogada({ telaAtiva, usuario, despesas, adicionarDespesa, removerDespesa, navegar, sair }: AreaLogadaProps) {
@@ -974,6 +995,7 @@ function AreaLogada({ telaAtiva, usuario, despesas, adicionarDespesa, removerDes
         {telaAtiva === "despesas" && <PaginaDespesas despesas={despesas} adicionarDespesa={adicionarDespesa} removerDespesa={removerDespesa} />}
         {telaAtiva === "metas" && <PaginaSimples titulo="Metas" texto="Defina metas de gasto por categoria e acompanhe se estão sendo cumpridas." />}
         {telaAtiva === "alertas" && <PaginaSimples titulo="Alertas" texto="Veja avisos sobre despesas com variação significativa em relação ao seu histórico." />}
+        {telaAtiva === "chat" && <Chat obterToken={obterTokenAcesso} />}
       </main>
     </div>
   );
