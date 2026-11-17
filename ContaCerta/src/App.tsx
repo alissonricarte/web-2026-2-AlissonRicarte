@@ -18,7 +18,7 @@ import Chat from "./Chat";
 
 const userPool = new CognitoUserPool({
   UserPoolId: "us-east-1_EmoDDS2nV",
-  ClientId: "1i6gpdcr7fuldt8b6plo8lnu1g",
+  ClientId: "6a3qrt8dlj47fhgj67r26k99ic",
 });
 
 /* Amplify: usado apenas para o login federado com o Google (Hosted UI do Cognito). */
@@ -26,7 +26,7 @@ Amplify.configure({
   Auth: {
     Cognito: {
       userPoolId: "us-east-1_EmoDDS2nV",
-      userPoolClientId: "1i6gpdcr7fuldt8b6plo8lnu1g",
+      userPoolClientId: "6a3qrt8dlj47fhgj67r26k99ic",
       loginWith: {
         oauth: {
           domain: "us-east-1emodds2nv.auth.us-east-1.amazoncognito.com",
