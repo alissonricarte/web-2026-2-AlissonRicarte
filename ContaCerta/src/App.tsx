@@ -10,6 +10,7 @@ import { Amplify } from "aws-amplify";
 import { fetchAuthSession, signInWithRedirect, signOut as amplifySignOut } from "aws-amplify/auth";
 import { Hub } from "aws-amplify/utils";
 import Chat from "./Chat";
+import Perfil from "./Perfil";
 
 /* =========================================================
    CONFIGURAÇÃO DO AWS COGNITO
@@ -149,6 +150,25 @@ async function carregarSessaoAtual(): Promise<Usuario | null> {
   });
 }
 
+/** ID token do Cognito (a API do perfil valida o id_token). */
+async function obterIdToken(): Promise<string | null> {
+  try {
+    const { tokens } = await fetchAuthSession();
+    if (tokens?.idToken) return tokens.idToken.toString();
+  } catch {
+    // segue para o fallback
+  }
+
+  return new Promise((resolve) => {
+    const atual = userPool.getCurrentUser();
+    if (!atual) return resolve(null);
+    atual.getSession((err: Error | null, sessao: CognitoUserSession | null) => {
+      if (err || !sessao?.isValid()) return resolve(null);
+      resolve(sessao.getIdToken().getJwtToken());
+    });
+  });
+}
+
 /** Access token do Cognito (login Google via Amplify ou e-mail/senha via identity-js). */
 async function obterTokenAcesso(): Promise<string | null> {
   try {
@@ -172,7 +192,7 @@ async function obterTokenAcesso(): Promise<string | null> {
    TIPOS E ROTEAMENTO
 ========================================================= */
 
-type Tela = "inicio" | "login" | "cadastro" | "confirmarCadastro" | "dashboard" | "despesas" | "metas" | "alertas" | "chat";
+type Tela = "perfil" | "inicio" | "login" | "cadastro" | "confirmarCadastro" | "dashboard" | "despesas" | "metas" | "alertas" | "chat";
 
 interface Usuario {
   nome: string;
@@ -299,7 +319,7 @@ function App() {
     );
   }
 
-  if (usuario && (tela === "dashboard" || tela === "despesas" || tela === "metas" || tela === "alertas" || tela === "chat")) {
+  if (usuario && (tela === "dashboard" || tela === "despesas" || tela === "metas" || tela === "alertas" || tela === "chat" || tela === "perfil")) {
     return (
       <AreaLogada
         telaAtiva={tela}
@@ -930,6 +950,7 @@ const ITENS_MENU: { id: Tela; label: string; icon: string }[] = [
   { id: "metas", label: "Metas", icon: "◎" },
   { id: "alertas", label: "Alertas", icon: "!" },
   { id: "chat", label: "Assistente", icon: "✦" },
+  { id: "perfil", label: "Perfil", icon: "☺" },
 ];
 
 function AreaLogada({ telaAtiva, usuario, despesas, adicionarDespesa, removerDespesa, navegar, sair }: AreaLogadaProps) {
@@ -996,6 +1017,7 @@ function AreaLogada({ telaAtiva, usuario, despesas, adicionarDespesa, removerDes
         {telaAtiva === "metas" && <PaginaSimples titulo="Metas" texto="Defina metas de gasto por categoria e acompanhe se estão sendo cumpridas." />}
         {telaAtiva === "alertas" && <PaginaSimples titulo="Alertas" texto="Veja avisos sobre despesas com variação significativa em relação ao seu histórico." />}
         {telaAtiva === "chat" && <Chat obterToken={obterTokenAcesso} />}
+        {telaAtiva === "perfil" && <Perfil obterToken={obterIdToken} nomeInicial={usuario.nome} emailInicial={usuario.email} />}
       </main>
     </div>
   );
