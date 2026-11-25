@@ -10,6 +10,7 @@ import { Amplify } from "aws-amplify";
 import { fetchAuthSession, signInWithRedirect, signOut as amplifySignOut } from "aws-amplify/auth";
 import { Hub } from "aws-amplify/utils";
 import Chat from "./Chat";
+import ChatAgente from "./ChatAgente";
 import Perfil from "./Perfil";
 
 /* =========================================================
@@ -192,7 +193,7 @@ async function obterTokenAcesso(): Promise<string | null> {
    TIPOS E ROTEAMENTO
 ========================================================= */
 
-type Tela = "perfil" | "inicio" | "login" | "cadastro" | "confirmarCadastro" | "dashboard" | "despesas" | "metas" | "alertas" | "chat";
+type Tela = "perfil" | "inicio" | "login" | "cadastro" | "confirmarCadastro" | "dashboard" | "despesas" | "metas" | "alertas" | "chat" | "agente";
 
 interface Usuario {
   nome: string;
@@ -319,7 +320,7 @@ function App() {
     );
   }
 
-  if (usuario && (tela === "dashboard" || tela === "despesas" || tela === "metas" || tela === "alertas" || tela === "chat" || tela === "perfil")) {
+  if (usuario && (tela === "dashboard" || tela === "despesas" || tela === "metas" || tela === "alertas" || tela === "chat" || tela === "agente" || tela === "perfil")) {
     return (
       <AreaLogada
         telaAtiva={tela}
@@ -950,6 +951,7 @@ const ITENS_MENU: { id: Tela; label: string; icon: string }[] = [
   { id: "metas", label: "Metas", icon: "◎" },
   { id: "alertas", label: "Alertas", icon: "!" },
   { id: "chat", label: "Assistente", icon: "✦" },
+  { id: "agente", label: "Agente IA", icon: "◆" },
   { id: "perfil", label: "Perfil", icon: "☺" },
 ];
 
@@ -1017,6 +1019,7 @@ function AreaLogada({ telaAtiva, usuario, despesas, adicionarDespesa, removerDes
         {telaAtiva === "metas" && <PaginaSimples titulo="Metas" texto="Defina metas de gasto por categoria e acompanhe se estão sendo cumpridas." />}
         {telaAtiva === "alertas" && <PaginaSimples titulo="Alertas" texto="Veja avisos sobre despesas com variação significativa em relação ao seu histórico." />}
         {telaAtiva === "chat" && <Chat obterToken={obterTokenAcesso} />}
+        {telaAtiva === "agente" && <ChatAgente obterToken={obterIdToken} />}
         {telaAtiva === "perfil" && <Perfil obterToken={obterIdToken} nomeInicial={usuario.nome} emailInicial={usuario.email} />}
       </main>
     </div>
