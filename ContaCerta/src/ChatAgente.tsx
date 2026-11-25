@@ -53,12 +53,33 @@ export default function ChatAgente({ obterToken }: ChatAgenteProps) {
             });
             const dados = await r.json().catch(() => ({}));
 
-            if (r.ok && dados.reply) {
-                adicionar("agente", String(dados.reply));
-            } else if (r.status === 401) {
+            if (r.status === 401) {
                 adicionar("erro", "Sessão expirada. Entre novamente.");
-            } else {
+            } else if (!r.ok || !dados.jobId) {
                 adicionar("erro", String(dados.error ?? dados.message ?? "Não foi possível falar com o assistente."));
+            } else {
+                // A Lambda trabalha em segundo plano: consulta o resultado a cada 2 segundos.
+                const inicio = Date.now();
+                let concluido = false;
+                while (!concluido && Date.now() - inicio < 110000) {
+                    await new Promise((ok) => setTimeout(ok, 2000));
+                    const tokenAtual = (await obterToken()) ?? token;
+                    const rr = await fetch(`${API_AGENTE}?jobId=${encodeURIComponent(String(dados.jobId))}`, {
+                        headers: { Authorization: tokenAtual },
+                    });
+                    const res = await rr.json().catch(() => ({}));
+                    if (rr.status === 401) {
+                        adicionar("erro", "Sessão expirada. Entre novamente.");
+                        concluido = true;
+                    } else if (res.status === "ok") {
+                        adicionar("agente", String(res.reply ?? ""));
+                        concluido = true;
+                    } else if (res.status === "erro") {
+                        adicionar("erro", String(res.error ?? "Não foi possível falar com o assistente."));
+                        concluido = true;
+                    }
+                }
+                if (!concluido) adicionar("erro", "O assistente demorou demais. Tente novamente.");
             }
         } catch {
             adicionar("erro", "Falha de conexão. Tente novamente.");
